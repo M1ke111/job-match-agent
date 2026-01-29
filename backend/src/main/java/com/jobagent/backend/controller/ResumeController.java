@@ -1,11 +1,12 @@
 package com.jobagent.backend.controller;
 
-import com.jobagent.backend.ResumeAnalyzer; // Import your interface
-import com.jobagent.backend.UserProfile;    // Import your record
+import com.jobagent.backend.*;
 import org.apache.tika.Tika;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/resume")
@@ -13,28 +14,61 @@ import org.springframework.web.multipart.MultipartFile;
 public class ResumeController {
 
     private final Tika tika = new Tika();
-    private final ResumeAnalyzer resumeAnalyzer; // Declare the AI Service
+    private final ResumeAnalyzer resumeAnalyzer;
+    private final MatchRepository matchRepository;// Declare the AI Service
 
     // Constructor Injection (Best Practice)
-    public ResumeController(ResumeAnalyzer resumeAnalyzer) {
+    public ResumeController(ResumeAnalyzer resumeAnalyzer, MatchRepository matchRepository) {
         this.resumeAnalyzer = resumeAnalyzer;
+        this.matchRepository = matchRepository;
     }
 
     @PostMapping("/upload")
-    public ResponseEntity<UserProfile> uploadResume(@RequestParam("file") MultipartFile file) {
+    public ResponseEntity<JobMatchReport> uploadAndMatch(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam("jd") String jd) { // Accepts the text area content
         try {
-            // 1. Extract Text
-            String parsedText = tika.parseToString(file.getInputStream());
+            // 1. Get Resume Text
+            String resumeText = tika.parseToString(file.getInputStream());
 
-            // 2. Ask AI to analyze it
-            System.out.println("Sending to OpenAI...");
-            UserProfile profile = resumeAnalyzer.analyzeResume(parsedText);
+            // 2. Ask AI to compare
+            JobMatchReport report = resumeAnalyzer.matchJob(resumeText, jd);
 
-            // 3. Return the structured JSON to the frontend
-            return ResponseEntity.ok(profile);
+            // 3. SAVE TO DATABASE
+            MatchRecord record = new MatchRecord();
+            record.setFileName(file.getOriginalFilename());
+            record.setMatchPercentage(report.matchPercentage());
+            record.setRecommendation(report.recommendation());
 
+            matchRepository.save(record);
+
+            return ResponseEntity.ok(report);
         } catch (Exception e) {
             e.printStackTrace();
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+
+    // This completes the path: /api/resume/history
+    @GetMapping("/history")
+    public ResponseEntity<List<MatchRecord>> getHistory() {
+        try {
+            // Fetch all records from the match_history table via JPA
+            List<MatchRecord> history = matchRepository.findAll();
+            return ResponseEntity.ok(history);
+        } catch (Exception e) {
+            // Log the error so you can see it in the IntelliJ console
+            System.err.println("Error fetching history: " + e.getMessage());
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+
+    @DeleteMapping("/history/{id}")
+    public ResponseEntity<Void> deleteRecord(@PathVariable Long id) {
+        try {
+            matchRepository.deleteById(id);
+            return ResponseEntity.noContent().build();
+        } catch (Exception e) {
             return ResponseEntity.internalServerError().build();
         }
     }
